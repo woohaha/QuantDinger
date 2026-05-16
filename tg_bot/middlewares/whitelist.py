@@ -26,7 +26,11 @@ class WhitelistMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
+        # Message has `.chat`; CallbackQuery reaches it via `.message.chat`.
         chat = getattr(event, "chat", None)
+        if chat is None:
+            inner = getattr(event, "message", None)
+            chat = getattr(inner, "chat", None) if inner else None
         user = getattr(event, "from_user", None)
 
         if chat is None or user is None:

@@ -74,3 +74,31 @@ async def test_handles_event_without_user(mw):
     data: dict = {}
     result = await mw(_handler_noop, event, data)
     assert result is None
+
+
+def _make_callback(chat_id: int, user_id: int, chat_type: str = "supergroup"):
+    """Mock aiogram CallbackQuery: chat lives on .message.chat (NOT .chat)."""
+    return SimpleNamespace(
+        chat=None,   # CallbackQuery has no .chat attribute
+        message=SimpleNamespace(chat=SimpleNamespace(id=chat_id, type=chat_type)),
+        from_user=SimpleNamespace(id=user_id),
+        answer=AsyncRecorder(),
+    )
+
+
+async def test_allows_whitelisted_callback(mw):
+    """Regression: CallbackQuery (no .chat, chat is on .message.chat) must pass."""
+    event = _make_callback(chat_id=-100111, user_id=111)
+    data: dict = {}
+    result = await mw(_handler_noop, event, data)
+    assert result == "ok"
+    assert data.get("handler_called") is True
+
+
+async def test_blocks_callback_from_unknown_user(mw):
+    event = _make_callback(chat_id=-100111, user_id=999)
+    data: dict = {}
+    result = await mw(_handler_noop, event, data)
+    assert result is None
+    assert len(event.answer.calls) == 1
+    assert "白名單" in event.answer.calls[0][0]
