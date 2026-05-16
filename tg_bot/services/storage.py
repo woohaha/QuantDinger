@@ -88,6 +88,18 @@ class Storage:
             cur = self._conn.execute("DELETE FROM watchlist WHERE code = ?", (code,))
             return cur.rowcount > 0
 
+    def watchlist_set_name(self, code: str, name: str | None) -> bool:
+        """Force-update name on an existing row. Returns True if a row was updated.
+
+        Unlike watchlist_add, this overwrites unconditionally — caller decides
+        whether to call it (e.g. /refresh only calls for rows whose name is NULL).
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE watchlist SET name = ? WHERE code = ?", (name, code),
+            )
+            return cur.rowcount > 0
+
     def watchlist_list(self) -> list[dict]:
         rows = self._conn.execute(
             "SELECT code, name, added_by, added_at FROM watchlist ORDER BY added_at ASC"

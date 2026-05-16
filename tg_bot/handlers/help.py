@@ -15,6 +15,7 @@ _HELP_TEXT = (
     "/unwatch &lt;code&gt;  — 從 watchlist 移除\n"
     "/list             — 顯示 watchlist\n"
     "/scan             — 對 watchlist 全跑 AI\n"
+    "/refresh          — 為缺名字的 watchlist 條目 backfill 中文名\n"
     "/help             — 顯示本說明\n\n"
     "範例：<code>/ai 600519</code>"
 )

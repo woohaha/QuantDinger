@@ -70,6 +70,50 @@ async def cmd_list(msg: Message, storage: Storage):
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
+@router.message(Command("refresh"))
+async def cmd_refresh(msg: Message, storage: Storage, quantdinger):
+    """One-shot: backfill name for every watchlist row whose name is NULL.
+
+    Useful for entries added before /watch started auto-resolving names.
+    Only touches rows missing names — never overwrites existing names.
+    """
+    rows = storage.watchlist_list()
+    if not rows:
+        await msg.answer("📭 Watchlist 為空。", parse_mode="HTML")
+        return
+    missing = [r for r in rows if not r.get("name")]
+    if not missing:
+        await msg.answer(
+            f"✅ Watchlist 全 {len(rows)} 檔已有名字，無需刷新。",
+            parse_mode="HTML",
+        )
+        return
+
+    progress = await msg.answer(
+        f"🔁 刷新中：0/{len(missing)}", parse_mode="HTML",
+    )
+    filled = 0
+    for i, r in enumerate(missing, 1):
+        name = await quantdinger.get_symbol_name(market="CNStock", symbol=r["code"])
+        if name:
+            storage.watchlist_set_name(r["code"], name)
+            filled += 1
+        # Update progress every 5 codes or on the final one.
+        if i % 5 == 0 or i == len(missing):
+            try:
+                await progress.edit_text(
+                    f"🔁 刷新中：{i}/{len(missing)}（已填 {filled}）",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+    await progress.edit_text(
+        f"✅ 刷新完成：填入 {filled}/{len(missing)} 個名字。",
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("scan"))
 async def cmd_scan(msg: Message,
                    storage: Storage,

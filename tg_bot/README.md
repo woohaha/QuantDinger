@@ -15,6 +15,7 @@ A-share only (6-digit codes), e.g. `/ai 600519`.
 | `/unwatch <code>` | Remove from watchlist |
 | `/list` | Show watchlist |
 | `/scan` | Run AI on every code in the watchlist |
+| `/refresh` | Backfill missing Chinese names for old watchlist rows |
 | `/start` `/help` | Show help |
 
 Inline keyboard on each result lets you re-run with `1H` / `4H` / `1W` / refresh.

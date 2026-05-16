@@ -53,6 +53,17 @@ def test_watchlist_remove_missing_returns_false(storage):
     assert storage.watchlist_remove("999999") is False
 
 
+def test_watchlist_set_name_updates_existing(storage):
+    storage.watchlist_add("600519", None, added_by=111)
+    ok = storage.watchlist_set_name("600519", "貴州茅台")
+    assert ok is True
+    assert storage.watchlist_list()[0]["name"] == "貴州茅台"
+
+
+def test_watchlist_set_name_missing_returns_false(storage):
+    assert storage.watchlist_set_name("999999", "X") is False
+
+
 def test_auth_cache_roundtrip(storage):
     assert storage.auth_cache_get() is None
     storage.auth_cache_set("token-abc")
