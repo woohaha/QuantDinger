@@ -161,44 +161,12 @@ services:
       timeout: 10s
       retries: 3
 
-  # ========================
-  # Telegram Bot
-  # ========================
-  tg_bot:
-    build:
-      context: .
-      dockerfile: tg_bot/Dockerfile
-    container_name: quantdinger-tg-bot
-    restart: unless-stopped
-    depends_on:
-      backend:
-        condition: service_healthy
-    environment:
-      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
-      - WHITELIST_GROUP_IDS=${WHITELIST_GROUP_IDS}
-      - WHITELIST_USER_IDS=${WHITELIST_USER_IDS}
-      - QUANTDINGER_API_URL=${QUANTDINGER_API_URL:-http://backend:5000}
-      - QUANTDINGER_USERNAME=${QUANTDINGER_USERNAME}
-      - QUANTDINGER_PASSWORD=${QUANTDINGER_PASSWORD}
-      - TELEGRAPH_ACCESS_TOKEN=${TELEGRAPH_ACCESS_TOKEN:-}
-      - TELEGRAPH_AUTHOR_NAME=${TELEGRAPH_AUTHOR_NAME:-QuantDinger Bot}
-      - TELEGRAPH_AUTHOR_URL=${TELEGRAPH_AUTHOR_URL:-}
-      - TELEGRAPH_REUSE_PAGE=${TELEGRAPH_REUSE_PAGE:-false}
-      - DB_PATH=/data/bot.db
-      - TZ=${TZ:-Asia/Shanghai}
-    volumes:
-      - tg_bot_data:/data
-    networks:
-      - quantdinger-network
-
 volumes:
   postgres_data:
     driver: local
   backend_logs:
     driver: local
   backend_data:
-    driver: local
-  tg_bot_data:
     driver: local
 
 networks:
