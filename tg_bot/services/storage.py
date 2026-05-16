@@ -74,9 +74,12 @@ class Storage:
 
     # ---- watchlist ----
     def watchlist_add(self, code: str, name: str | None, added_by: int) -> None:
+        # COALESCE keeps the old name if already set; new non-null name backfills NULL.
+        # added_by / added_at stay from the original insert.
         with self._conn:
             self._conn.execute(
-                "INSERT OR IGNORE INTO watchlist(code, name, added_by, added_at) VALUES (?,?,?,?)",
+                "INSERT INTO watchlist(code, name, added_by, added_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(code) DO UPDATE SET name = COALESCE(watchlist.name, excluded.name)",
                 (code, name, added_by, _now_iso()),
             )
 

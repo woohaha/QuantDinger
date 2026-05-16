@@ -29,6 +29,19 @@ def test_watchlist_add_dup_is_noop(storage):
     assert rows[0]["name"] == "貴州茅台"
 
 
+def test_watchlist_add_backfills_null_name(storage):
+    """If a row was inserted with name=None, a later add with a real name fills it in."""
+    storage.watchlist_add("600519", None, added_by=111)
+    rows = storage.watchlist_list()
+    assert rows[0]["name"] is None
+    storage.watchlist_add("600519", "貴州茅台", added_by=222)
+    rows = storage.watchlist_list()
+    assert len(rows) == 1
+    assert rows[0]["name"] == "貴州茅台"
+    # added_by stays from the original insert (we don't overwrite it)
+    assert rows[0]["added_by"] == 111
+
+
 def test_watchlist_remove(storage):
     storage.watchlist_add("600519", "貴州茅台", added_by=111)
     removed = storage.watchlist_remove("600519")

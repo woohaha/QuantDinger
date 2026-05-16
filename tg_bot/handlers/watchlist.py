@@ -28,14 +28,18 @@ async def _err(msg: Message, text: str):
 
 
 @router.message(Command("watch"))
-async def cmd_watch(msg: Message, storage: Storage):
+async def cmd_watch(msg: Message, storage: Storage, quantdinger):
     try:
         code = parse_code(msg.text or "")
     except ValueError as e:
         await _err(msg, str(e))
         return
-    storage.watchlist_add(code, name=None, added_by=msg.from_user.id)
-    await msg.answer(f"✅ 已加入 watchlist：<code>{code}</code>", parse_mode="HTML")
+    # Best-effort name lookup; on any failure the row still gets added with
+    # name=None (later /ai or /scan can backfill it via run_analysis).
+    name = await quantdinger.get_symbol_name(market="CNStock", symbol=code)
+    storage.watchlist_add(code, name=name, added_by=msg.from_user.id)
+    label = f"<code>{code}</code>" + (f"  {name}" if name else "")
+    await msg.answer(f"✅ 已加入 watchlist：{label}", parse_mode="HTML")
 
 
 @router.message(Command("unwatch"))

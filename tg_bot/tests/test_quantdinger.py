@@ -93,3 +93,40 @@ async def test_analyze_insufficient_credits(client):
                              language="zh-TW", timeframe="1D")
     assert "credits" in str(exc.value).lower()
     await client.aclose()
+
+
+@respx.mock
+async def test_get_symbol_name_returns_name(client):
+    respx.get(f"{BASE}/api/market/symbols/search").mock(return_value=httpx.Response(
+        200, json={"code": 1, "msg": "success",
+                   "data": [{"market": "CNStock", "symbol": "600519", "name": "貴州茅台"}]}))
+    name = await client.get_symbol_name(market="CNStock", symbol="600519")
+    assert name == "貴州茅台"
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_symbol_name_no_match_returns_none(client):
+    respx.get(f"{BASE}/api/market/symbols/search").mock(return_value=httpx.Response(
+        200, json={"code": 1, "data": []}))
+    name = await client.get_symbol_name(market="CNStock", symbol="999999")
+    assert name is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_symbol_name_echo_symbol_treated_as_none(client):
+    """When backend echoes the symbol as name (no real match), treat as None."""
+    respx.get(f"{BASE}/api/market/symbols/search").mock(return_value=httpx.Response(
+        200, json={"code": 1, "data": [{"symbol": "600519", "name": "600519"}]}))
+    name = await client.get_symbol_name(market="CNStock", symbol="600519")
+    assert name is None
+    await client.aclose()
+
+
+@respx.mock
+async def test_get_symbol_name_http_error_returns_none(client):
+    respx.get(f"{BASE}/api/market/symbols/search").mock(return_value=httpx.Response(500))
+    name = await client.get_symbol_name(market="CNStock", symbol="600519")
+    assert name is None
+    await client.aclose()

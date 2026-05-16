@@ -87,6 +87,39 @@ class QuantDingerClient:
             )
         raise BackendError(msg, code=resp.status_code, data=data)
 
+    async def get_symbol_name(self, *, market: str, symbol: str) -> str | None:
+        """Look up a human-readable name for a symbol.
+
+        Hits the public-ish endpoint `GET /api/market/symbols/search` which
+        queries the seeded symbol DB. Returns None on any error (404, timeout,
+        no match, network) — caller is expected to degrade gracefully.
+
+        This endpoint does not require auth, so we don't bother attaching a
+        Bearer token; staying unauthed avoids cascading 401 retries when the
+        bot is in a partial-startup state.
+        """
+        try:
+            resp = await self._client.get(
+                f"{self.base}/api/market/symbols/search",
+                params={"market": market, "keyword": symbol, "limit": 1},
+                timeout=8.0,
+            )
+            if resp.status_code != 200:
+                return None
+            payload = resp.json() or {}
+        except Exception:
+            return None
+        items = payload.get("data") or []
+        if not items or not isinstance(items, list):
+            return None
+        first = items[0] or {}
+        name = (first.get("name") or "").strip()
+        # Backend sometimes echoes the symbol as name when no real name found;
+        # treat that as "no name" so we don't pollute the watchlist.
+        if not name or name.upper() == str(symbol).upper():
+            return None
+        return name
+
     async def _post_authed(self, path: str, *, json: dict) -> httpx.Response:
         """POST that auto re-logins once on 401."""
         token = await self._ensure_token()
