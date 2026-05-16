@@ -64,3 +64,43 @@ async def cmd_list(msg: Message, storage: Storage):
         name = r["name"] or "—"
         lines.append(f"• <code>{r['code']}</code>  {name}")
     await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("scan"))
+async def cmd_scan(msg: Message,
+                   storage: Storage,
+                   quantdinger,                          # QuantDingerClient
+                   telegraph,                            # TelegraphClient
+                   telegraph_author_name: str,
+                   telegraph_author_url: str,
+                   reuse_page: bool):
+    import asyncio
+    from tg_bot.handlers.analyze import run_analysis, _timeframe_keyboard
+    from tg_bot.services.quantdinger import BackendError
+
+    rows = storage.watchlist_list()
+    if not rows:
+        await msg.answer("📭 Watchlist 為空，沒東西可掃。", parse_mode="HTML")
+        return
+
+    await msg.answer(f"🔁 開始 /scan，共 {len(rows)} 檔...", parse_mode="HTML")
+
+    for r in rows:
+        code = r["code"]
+        try:
+            banner, _ = await run_analysis(
+                code=code, name=r.get("name"), timeframe="1D",
+                storage=storage, quantdinger=quantdinger, telegraph=telegraph,
+                telegraph_author_name=telegraph_author_name,
+                telegraph_author_url=telegraph_author_url,
+                reuse_page=reuse_page,
+            )
+            await msg.answer(banner, parse_mode="HTML",
+                             disable_web_page_preview=False,
+                             reply_markup=_timeframe_keyboard(code))
+        except BackendError as e:
+            await msg.answer(f"❌ {code} 分析失敗：{e}", parse_mode="HTML")
+        except Exception as e:
+            await msg.answer(f"❌ {code} 異常：{type(e).__name__}: {e}",
+                             parse_mode="HTML")
+        await asyncio.sleep(2)
