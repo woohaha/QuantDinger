@@ -13,7 +13,7 @@ QuantDinger 首頁的「AI 篩選 / AI 快速分析」功能（後端 `POST /api
 3. 再用規則計算的客觀評分 + 多周期共識，校準 LLM 輸出
 4. 把結果存入 `analysis_memory`，下次相似條件時可被檢索
 
-本專案的目標是把這個功能透過 Telegram bot 暴露給一個小型白名單群組使用，**不重寫核心邏輯**，bot 純粹是個瘦的 HTTP 客戶端 + 訊息格式化層。
+本專案的目標是把這個功能透過 Telegram bot 暴露給一個小型白名單群組使用，**不重寫核心邏輯**，bot 純粹是個瘦的 HTTP 客戶端 + 訊息格式化層。詳細報告承載在 Telegraph 上，TG 群裡只發精簡 banner + 連結。
 
 ## 2. 範圍
 
@@ -24,7 +24,8 @@ QuantDinger 首頁的「AI 篩選 / AI 快速分析」功能（後端 `POST /api
 - 只支援 A 股（CNStock 市場），輸入 6 位數股票代碼
 - TG `group_id` + `user_id` 雙重白名單
 - 群共享 watchlist + 群共享後端 credits 池（不額外限流）
-- 詳細多段訊息輸出（每次分析 4 條訊息）
+- **詳細報告承載在 Telegraph 公開頁**；TG 訊息只發精簡 banner + 連結
+- 啟動自動 createAccount 拿 Telegraph access_token；page path 緩存到 SQLite 供日後 editPage
 
 ### 不包含（後續可加）
 - 定時自動推送（每日開盤前自動分析 watchlist）
@@ -32,15 +33,16 @@ QuantDinger 首頁的「AI 篩選 / AI 快速分析」功能（後端 `POST /api
 - 多語言（暫只繁中輸出；後端 `language` 參數固定 `zh-TW`）
 - 用戶各自 watchlist
 - 每用戶限流 / credits 隔離
-- 圖表 / 截圖
+- 圖表 / 截圖（Telegraph 支援 uploadFile，可日後加 K 線 PNG）
 - Webhook 模式（用 long polling 即可）
+- Telegraph 失敗的「降級成多條 TG 訊息」備援（群友都能訪問 Telegraph，不做）
 
 ## 3. 架構
 
 ```
         ┌──────────────┐
         │  Telegram    │
-        │   群組聊天    │
+        │   群組聊天    │◄─── banner + Telegraph 連結
         └──────┬───────┘
                │ long poll
                ▼
@@ -49,14 +51,19 @@ QuantDinger 首頁的「AI 篩選 / AI 快速分析」功能（後端 `POST /api
    │ (Python 3.11 +       │                                    │
    │  aiogram v3 + httpx) │                                    ▼
    │                      │           ┌──────────────────────────────┐
-   │  /data/watchlist.db  │           │ quantdinger-backend (Flask)  │
-   │  (SQLite, mounted)   │           │   :5000                      │
-   └──────────────────────┘           │   POST /api/auth/login       │
-                                      │   POST /api/fast-analysis/   │
-                                      │        analyze               │
-                                      │   GET  /api/fast-analysis/   │
-                                      │        history               │
-                                      └──────────────────────────────┘
+   │  /data/bot.db        │           │ quantdinger-backend (Flask)  │
+   │  (watchlist +        │           │   :5000                      │
+   │   auth_cache +       │           │   POST /api/auth/login       │
+   │   telegraph_account +│           │   POST /api/fast-analysis/   │
+   │   telegraph_pages)   │           │        analyze               │
+   └────────┬─────────────┘           └──────────────────────────────┘
+            │
+            │ HTTPS
+            ▼
+   ┌──────────────────────┐
+   │  api.telegra.ph      │ ← createAccount / createPage / editPage
+   │  (公開頁面，無權限)   │
+   └──────────────────────┘
 ```
 
 ### 為什麼是這個架構
@@ -64,6 +71,7 @@ QuantDinger 首頁的「AI 篩選 / AI 快速分析」功能（後端 `POST /api
 - **long polling**：不需要對外 HTTPS / 反代，最簡單
 - **單獨 SQLite**：watchlist 只是 1~50 條記錄的列表，沒必要碰 postgres
 - **HTTP 客戶端薄殼**：分析邏輯、LLM、credits、memory 全部沿用 backend，bot 永遠跟著 backend 升級
+- **Telegraph 承載詳細報告**：群組噪音降到一條訊息；報告可分享、可存檔；自動 createAccount 零配置；page path 緩存可日後 editPage（同一檔股票重跑 /ai 時更新而非新建頁）
 
 ## 4. 命令詳細
 
@@ -83,11 +91,12 @@ QuantDinger 首頁的「AI 篩選 / AI 快速分析」功能（後端 `POST /api
 - 失敗：靜默忽略（不回覆，避免 bot 在非白名單群組刷屏）
 - 私聊（非群組）：一律忽略
 
-## 5. 輸出格式（每次 /ai 出 4 條訊息）
+## 5. 輸出格式
 
-用 HTML parse_mode（TG 對 HTML 比 Markdown 容錯好）。
+### 5.1 TG 端 — 一條精簡 banner
 
-### 訊息 1 — Banner（簡潔可一眼看完）
+用 HTML parse_mode。可一眼掃完。
+
 ```
 📊 <b>中國中車 (601766)</b>
 ━━━━━━━━━━━━━━━━━━
@@ -97,64 +106,95 @@ QuantDinger 首頁的「AI 篩選 / AI 快速分析」功能（後端 `POST /api
 🛡️ 止損：¥6.52  (-4.8%)
 🎯 止盈：¥7.43  (+8.5%)
 📦 倉位：30%  ⏱ 中期
-━━━━━━━━━━━━━━━━━━
-數據時間：2026-05-16 14:32
-模型：moonshot-v1-8k
-```
 
-### 訊息 2 — 三段分析（LLM 原文）
-```
-📈 <b>技術分析</b>
-（LLM analysis.technical 全文）
+📝 <b>摘要</b>：(LLM summary，限 200 字)
 
-💼 <b>基本面</b>
-（LLM analysis.fundamental 全文）
+🔗 <a href="https://telegra.ph/600519-05-16">📑 完整分析報告 →</a>
 
-📰 <b>市場情緒</b>
-（LLM analysis.sentiment 全文）
-```
-
-### 訊息 3 — 數據面
-```
-🕐 <b>多周期趨勢</b>
-~24h：看多（中）
-~3d：看多（強）
-~1w：看多（中）
-~1m：看多（中）
-
-📊 <b>客觀評分</b>
-技術面：72/100
-基本面：65/100
-情緒面：58/100
-宏觀面：60/100
-總分：+38（中等利多）
-
-📚 <b>歷史類似模式</b>
-- 2026-04-10 BUY @ ¥6.45（正確，+5.2%）
-- 2026-03-22 BUY @ ¥6.30（正確，+3.1%）
-- 2026-02-15 HOLD @ ¥6.10（—）
-```
-
-如果 `analysis_memory` 沒有類似模式，這段隱藏。
-
-### 訊息 4 — 風險清單 + 按鈕
-```
-⚠️ <b>主要風險</b>
-1. 成交量持續萎縮，缺乏買盤跟進
-2. 政策面不確定性
-
-💡 <b>關鍵理由</b>
-1. MACD 在零軸下方金叉重現
-2. 公司財報超預期
-3. 行業景氣度回升
-
+<i>數據時間：2026-05-16 14:32 · 模型：moonshot-v1-8k</i>
 [切 1H] [切 4H] [切 1W] [刷新]
 ```
 
-按鈕為 Inline Keyboard，callback_data 含 `code` 和 `timeframe`，按下時觸發新的 /ai 流程。
+Inline keyboard 按鈕，callback_data 含 `code` 和 `timeframe`，按下時觸發新的 /ai 流程，會新建一個 Telegraph 頁（或 editPage 同一頁，視 §6.4 策略）。
 
-### 訊息分段為什麼是 4 條
-TG 訊息 4096 字元限制；分 4 條讓用戶在手機上滾動方便，也避免單條超限被截斷。
+### 5.2 Telegraph 頁面結構
+
+Title 格式：`{股票名} ({code}) - {decision} - {YYYY-MM-DD HH:mm}`
+例：`中國中車 (601766) - BUY - 2026-05-16 14:32`
+
+頁面內容（從上到下）：
+
+```
+[h3]  📊 決策摘要
+[p]   BUY · 信心 78% · 建議倉位 30% · 中期持有
+[p]   入場 ¥6.85  /  止損 ¥6.52 (-4.8%)  /  止盈 ¥7.43 (+8.5%)
+
+[hr]
+
+[h3]  📈 技術分析
+[p]   (LLM analysis.technical 全文)
+
+[h3]  💼 基本面
+[p]   (LLM analysis.fundamental 全文)
+
+[h3]  📰 市場情緒
+[p]   (LLM analysis.sentiment 全文)
+
+[hr]
+
+[h3]  🕐 多周期趨勢
+[ul]
+  - ~24h：看多（中）
+  - ~3d：看多（強）
+  - ~1w：看多（中）
+  - ~1m：看多（中）
+
+[h3]  📊 客觀評分（規則計算）
+[ul]
+  - 技術面：72/100
+  - 基本面：65/100
+  - 情緒面：58/100
+  - 宏觀面：60/100
+  - 總分：+38（中等利多）
+
+[h3]  📚 歷史類似模式
+[ul]
+  - 2026-04-10 BUY @ ¥6.45（正確，+5.2%）
+  - ...
+（無資料時隱藏整段）
+
+[hr]
+
+[h3]  💡 關鍵理由
+[ol]
+  1. MACD 在零軸下方金叉重現
+  2. 公司財報超預期
+  3. 行業景氣度回升
+
+[h3]  ⚠️ 主要風險
+[ol]
+  1. 成交量持續萎縮，缺乏買盤跟進
+  2. 政策面不確定性
+
+[hr]
+
+[p]   <i>由 QuantDinger AI 生成 · 不構成投資建議 · 模型 moonshot-v1-8k</i>
+```
+
+Telegraph 的 Node 樹格式範例：
+```json
+[
+  {"tag": "h3", "children": ["📊 決策摘要"]},
+  {"tag": "p", "children": ["BUY · 信心 78% ..."]},
+  {"tag": "hr"},
+  {"tag": "h3", "children": ["📈 技術分析"]},
+  {"tag": "p", "children": ["(技術分析文字)"]},
+  {"tag": "ul", "children": [
+    {"tag": "li", "children": ["~24h：看多（中）"]},
+    {"tag": "li", "children": ["~3d：看多（強）"]}
+  ]}
+]
+```
 
 ## 6. 與 Backend 的協議
 
@@ -199,11 +239,60 @@ TG 訊息 4096 字元限制；分 4 條讓用戶在手機上滾動方便，也�
 ### 6.3 /scan 流程
 - 取得 watchlist 後依序對每檔 code 跑一次上面的流程
 - 每檔之間 sleep 2 秒
-- 一條分析（4 訊息）失敗不影響下一檔
+- 一檔分析（banner + Telegraph 頁）失敗不影響下一檔
+
+### 6.4 Telegraph 整合
+
+**API 端點**：`https://api.telegra.ph/<method>`，全部 GET/POST 表單，不需要 OAuth。
+
+**啟動時 access_token 取得**：
+```
+1. bot 啟動，從 SQLite telegraph_account 表讀 access_token
+2. 若無記錄：
+   - POST https://api.telegra.ph/createAccount
+     form: { short_name: "QuantDinger",
+             author_name: TELEGRAPH_AUTHOR_NAME,
+             author_url:  TELEGRAPH_AUTHOR_URL }
+   - 回 { ok: true, result: { access_token, auth_url, short_name, ... } }
+   - 寫入 SQLite
+3. 若有記錄：直接用
+4. 若 env 設了 TELEGRAPH_ACCESS_TOKEN 覆寫，則優先用 env 那個
+```
+
+**createPage 呼叫**：
+```
+POST https://api.telegra.ph/createPage
+form: {
+  access_token: <cached>,
+  title: "中國中車 (601766) - BUY - 2026-05-16 14:32",   # 最長 256 字
+  author_name: TELEGRAPH_AUTHOR_NAME,
+  author_url:  TELEGRAPH_AUTHOR_URL,
+  content: <Node 樹的 JSON 字串>,                         # 64 KB 上限
+  return_content: false
+}
+回 { ok: true, result: { path, url, ... } }
+```
+
+**editPage 策略**：每次 /ai 同一個 code 是否複用前一個 page？
+- **預設 false（每次新建 page）**：保留歷史軌跡；同一檔多次分析在 telegraph_pages 表都有記錄；最新一條供 banner 連結
+- 後續可加 env `TELEGRAPH_REUSE_PAGE=true` 改成 editPage 同一頁，省連結數但會覆蓋歷史
+
+**page 緩存**：每次 createPage 成功後，寫入 telegraph_pages 表（memory_id, path, url, symbol, created_at），方便日後 /history 命令快速查歷史 page。
+
+**失敗處理**：
+- API 回 `{ok: false, error: ...}` → 重試 1 次（exponential backoff 1s）
+- 二次失敗 → editMessageText 為 "🟢 BUY · 信心 78% ...（簡 banner）⚠️ 詳細報告生成失敗"
+- access_token 失效（極少見） → 自動重新 createAccount
+
+**Telegraph 限制**：
+- title ≤ 256 字元
+- author_name ≤ 128 字元
+- content ≤ 64 KB（折合約 2 萬中文字，遠超我們需要）
+- 速率限制官方未公開，實測幾秒一頁無壓力
 
 ## 7. 資料儲存
 
-### SQLite schema（`/data/watchlist.db`）
+### SQLite schema（`/data/bot.db`）
 
 ```sql
 CREATE TABLE IF NOT EXISTS watchlist (
@@ -218,9 +307,35 @@ CREATE TABLE IF NOT EXISTS auth_cache (
     token      TEXT NOT NULL,
     saved_at   TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS telegraph_account (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),  -- 單行
+    access_token TEXT NOT NULL,
+    short_name   TEXT,
+    author_name  TEXT,
+    author_url   TEXT,
+    auth_url     TEXT,                                -- Telegraph 提供的後台網址（一次性）
+    created_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS telegraph_pages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    code       TEXT NOT NULL,
+    path       TEXT NOT NULL UNIQUE,                  -- telegra.ph 的 path 段
+    url        TEXT NOT NULL,
+    title      TEXT,
+    timeframe  TEXT,                                  -- 該頁對應的分析周期
+    decision   TEXT,                                  -- BUY/SELL/HOLD
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegraph_pages_code_time
+    ON telegraph_pages(code, created_at DESC);
 ```
 
-`auth_cache` 表雖然多此一舉（內存夠用），但讓 bot 重啟不必馬上 re-login，能稍微減少對 backend `/auth/login` 的呼叫頻次。
+- `auth_cache`：讓 bot 重啟不必馬上 re-login backend
+- `telegraph_account`：access_token 永不過期但僅此一份，必須持久化否則重啟後失去所有以前頁面的編輯權
+- `telegraph_pages`：每次 createPage 寫一筆，供日後 history 查詢或 editPage 復用
 
 ## 8. 文件結構
 
@@ -239,14 +354,17 @@ tg_bot/
 │   └── callbacks.py             # inline keyboard callback（切周期、刷新）
 ├── services/
 │   ├── __init__.py
-│   ├── quantdinger.py           # HTTP client (login, analyze, poll, history)
-│   ├── storage.py               # SQLite watchlist + auth_cache
-│   └── formatter.py             # backend JSON → 4 段 HTML + 按鈕
+│   ├── quantdinger.py           # HTTP client (login, analyze, history)
+│   ├── storage.py               # SQLite (watchlist + auth_cache + telegraph_*)
+│   ├── telegraph.py             # Telegraph API client (createAccount / createPage / editPage)
+│   ├── page_builder.py          # backend JSON → Telegraph Node 樹
+│   └── banner.py                # backend JSON → TG banner HTML（含 Telegraph 連結）
 ├── data/                        # docker volume mount 點
 │   └── .gitkeep
 ├── tests/
-│   ├── test_formatter.py        # 給 fake JSON，驗證 HTML 輸出正確
-│   └── test_storage.py          # watchlist CRUD
+│   ├── test_banner.py           # 給 fake JSON，驗證 banner HTML 正確
+│   ├── test_page_builder.py     # 給 fake JSON，驗證 Node 樹結構合法且完整
+│   └── test_storage.py          # 各表 CRUD
 ├── Dockerfile
 ├── requirements.txt
 ├── .dockerignore
@@ -273,6 +391,12 @@ WHITELIST_USER_IDS=111111,222222,333333       # 逗號分隔 TG user id
 QUANTDINGER_API_URL=http://backend:5000        # 同 compose 網路內名稱
 QUANTDINGER_USERNAME=quantdinger
 QUANTDINGER_PASSWORD=123456
+
+# === Telegraph 報告承載 ===
+TELEGRAPH_ACCESS_TOKEN=                       # 留空則首次啟動自動 createAccount 並寫入 SQLite
+TELEGRAPH_AUTHOR_NAME=QuantDinger Bot
+TELEGRAPH_AUTHOR_URL=https://t.me/yourgroup   # 可空；點 author 跳到群連結
+TELEGRAPH_REUSE_PAGE=false                    # true 則同一 code 重跑時 editPage 而非新建
 ```
 
 ### 9.2 docker-compose.yml 新增 service
@@ -297,6 +421,10 @@ QUANTDINGER_PASSWORD=123456
       - QUANTDINGER_API_URL=${QUANTDINGER_API_URL:-http://backend:5000}
       - QUANTDINGER_USERNAME=${QUANTDINGER_USERNAME}
       - QUANTDINGER_PASSWORD=${QUANTDINGER_PASSWORD}
+      - TELEGRAPH_ACCESS_TOKEN=${TELEGRAPH_ACCESS_TOKEN:-}
+      - TELEGRAPH_AUTHOR_NAME=${TELEGRAPH_AUTHOR_NAME:-QuantDinger Bot}
+      - TELEGRAPH_AUTHOR_URL=${TELEGRAPH_AUTHOR_URL:-}
+      - TELEGRAPH_REUSE_PAGE=${TELEGRAPH_REUSE_PAGE:-false}
       - TZ=${TZ:-Asia/Shanghai}
     volumes:
       - tg_bot_data:/data
@@ -333,12 +461,16 @@ volumes:
 | 分析回 error | editMessage 為 "❌ 分析失敗：{error msg}" |
 | /scan 中某檔失敗 | 對該檔輸出錯誤訊息，繼續下一檔 |
 | credits 不足 | 解析回應的 `{required, current, shortage}`，群組裡明示 "credits 不足，需 X 當前 Y" |
+| Telegraph createPage 失敗 | 重試 1 次；仍失敗 → banner 末尾改為 "⚠️ 詳細報告生成失敗" 並輸出 LLM summary 全文 |
+| Telegraph access_token 失效 | 自動 createAccount 取新 token 並覆寫 telegraph_account 表，記錄 warn 日誌 |
+| Telegraph 內容超 64 KB（極端情況） | 把 analysis 三段做 1500 字截斷 + 末尾加 "...(報告過長已截斷)" |
 
 ## 11. 測試策略
 
 - **單測**：
-  - `test_formatter.py`：餵 fake JSON（從真實 /analyze 抓一份 fixture），驗證 4 條 HTML 文字結構符合預期、特殊字元被 escape
-  - `test_storage.py`：watchlist add/remove/list 邏輯
+  - `test_banner.py`：餵 fake JSON（從真實 /analyze 抓一份 fixture），驗證 banner HTML 結構正確、含 Telegraph 連結、特殊字元被 escape
+  - `test_page_builder.py`：驗證 Node 樹結構符合 Telegraph 規範（tag 列舉、children 為 list、無禁用屬性）；驗證所有欄位都被渲染
+  - `test_storage.py`：所有 4 張表的 CRUD（watchlist / auth_cache / telegraph_account / telegraph_pages）
   - `test_whitelist.py`：白名單中間件對各種 update 類型的判斷
 - **整合測試**：手動，在測試群組裡跑 `/ai 600519` 驗證端到端
 - **不做**：對 backend API 的 mock 測試（依賴太多，容易 drift；用真實 backend 整測）
@@ -361,14 +493,18 @@ volumes:
 | 群組裡多人同時 /ai 同一檔 | backend 已有 90 秒 inflight 鎖，會回 429；bot 解析後回 "已有人在分析此檔，請稍候" |
 | SQLite 損壞 | watchlist 是 best-effort 資料；docker volume 備份即可 |
 | 群組被陌生人加入機器人 | `WHITELIST_GROUP_IDS` 嚴格白名單，未列入的群一律不回應 |
+| Telegraph 是公開頁面，URL 可被搜尋 | URL 含時間戳難猜，但仍是公開；分析觀點外洩可接受（個股技術分析非機密）；若日後需保密改自架頁 |
+| Telegraph API 偶發不可用 | 重試 + 降級為 banner only；不阻斷後續分析 |
 
 ## 14. 驗收標準
 
 MVP 完成需滿足：
 
-1. 在白名單群組裡發 `/ai 600519`，30–90 秒內收到 4 條訊息，內容齊全
-2. `/watch 600519` 後 `/list` 看到該檔；`/unwatch 600519` 後消失
-3. `/scan` 對 3 檔股票按順序輸出 3 組（共 12 條）訊息
-4. 非白名單群組裡發 `/ai` 完全沒反應
-5. backend 重啟後 bot 自動 re-login 並能繼續工作
-6. bot 容器重啟後 watchlist 不丟失
+1. 在白名單群組裡發 `/ai 600519`，30–90 秒內收到 1 條 banner 訊息，含可點的 Telegraph 連結
+2. 點 Telegraph 連結後在瀏覽器看到完整報告，含三段分析、多周期、評分、風險，排版正確
+3. `/watch 600519` 後 `/list` 看到該檔；`/unwatch 600519` 後消失
+4. `/scan` 對 3 檔股票按順序輸出 3 條 banner（每條都有獨立 Telegraph 連結）
+5. 非白名單群組裡發 `/ai` 完全沒反應
+6. backend 重啟後 bot 自動 re-login 並能繼續工作
+7. bot 容器重啟後 watchlist 不丟失；Telegraph access_token 不丟失（不會重新 createAccount）
+8. 模擬 Telegraph API 失敗（斷網或假 token），banner 仍正確發送並提示「詳細報告生成失敗」
